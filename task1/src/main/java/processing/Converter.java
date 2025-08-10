@@ -25,7 +25,11 @@ public class Converter {
                 .setSetterInfo(JsonSetter.Value.forValueNulls(Nulls.SKIP));
 
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200)
+            throw new IOException("Error: HTTP status code " + response.statusCode());
+
         WeatherData weatherData = objectMapper.readValue(response.body(), WeatherData.class);
+
         return weatherData;
     }
 }

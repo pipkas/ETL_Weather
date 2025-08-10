@@ -428,8 +428,6 @@ public class WeatherData {
         private String time;
         private String sunrise;
         private String sunset;
-        @JsonProperty("daylight_duration")
-        private String daylightDuration;
 
         public String getTime() {
             return time;
@@ -449,20 +447,13 @@ public class WeatherData {
         public void setSunset(String sunset) {
             this.sunset = sunset;
         }
-        public String getDaylightDuration() {
-            return daylightDuration;
-        }
-        public void setDaylightDuration(String daylightDuration) {
-            this.daylightDuration = daylightDuration;
-        }
+
     }
 
     public static class DailyData {
         private Long[] time;
         private Long[] sunrise;
         private Long[] sunset;
-        @JsonProperty("daylight_duration")
-        private Double[] daylightDuration;
 
         public Long[] getTime() {
             return time;
@@ -489,11 +480,13 @@ public class WeatherData {
         }
 
         public Double[] getDaylightDuration() {
+            final int secInHour = 3600;
+            Double[] daylightDuration = new Double[time.length];
+            for (int dayNum = 0; dayNum < time.length; dayNum++)
+                daylightDuration[dayNum] = (double) (sunset[dayNum] - sunrise[dayNum]) / secInHour;
+
             return daylightDuration;
         }
 
-        public void setDaylightDuration(Double[] daylightDuration) {
-            this.daylightDuration = daylightDuration;
-        }
     }
 }

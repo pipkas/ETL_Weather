@@ -1,91 +1,128 @@
 package processing;
 
+import data.Column;
 import data.WeatherData;
-
+import factory.Conversion;
+import factory.ConversionFactory;
+import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
+
+import static processing.NumberArrayWorker.addToNumberArray;
+import static processing.NumberArrayWorker.divInNumberArray;
 
 public class Transformer {
 
-    private static final int colNumber = 23;
-    public static List<String[]> transformData(WeatherData weatherData, String csvHeader) {
-        List<String[]> csvData = new ArrayList<>();
-        csvData.add(csvHeader.split(","));
+    private final int colCount = 38;
+    private final int fullDayInHours = 24;
+    private final int funcCount = 12;
+    private WeatherData weatherData;
+    private String[][] csvData;
+    private Number[] values;
+    Column[] columns;
 
-        for (int i = 0; i < weatherData.getHourly().getTime().length; i++) {
-            String[] row = new String[colNumber];
-            Arrays.fill(row, "");
+    public Transformer(Column[] columns, WeatherData weatherData) {
+        int recordCount = weatherData.getHourly().getTime().length;
+        this.csvData = new String[recordCount + 1][colCount];
+        this.values = new Number[colCount];
+        this.columns = columns;
+        this.weatherData = weatherData;
+    }
 
-            LocalDateTime dateTime = LocalDateTime.ofInstant(
-                    Instant.ofEpochSecond(weatherData.getHourly().getTime()[i]),
+    public String[][] transformData() throws IOException {
+
+        for (int i = 0; i < colCount; i++) //заполняем названия столбцов
+            csvData[0][i] = columns[i].columnName();
+
+        for (int dayNum = 0; dayNum < weatherData.getDaily().getTime().length; dayNum++) {//цикл по дням
+            Arrays.fill(values, 0);//начинается новый день
+            LocalDateTime sunrise = LocalDateTime.ofInstant(Instant.ofEpochSecond(
+                    weatherData.getDaily().getSunrise()[dayNum]),
                     ZoneId.of(weatherData.getTimezone()));
-            row[0] = String.valueOf(weatherData.getLatitude());
-            row[1] = String.valueOf(weatherData.getLongitude());
-            row[2] = dateTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-            row[3] = dateTime.format(DateTimeFormatter.ofPattern("HH:mm"));
 
-            row[4] = String.valueOf(weatherData.getHourly().getTemperature2m()[i]);
-            row[5] = String.valueOf(weatherData.getHourly().getRelativeHumidity2m()[i]);
+            LocalDateTime sunset = LocalDateTime.ofInstant(Instant.ofEpochSecond(
+                            weatherData.getDaily().getSunset()[dayNum]),
+                    ZoneId.of(weatherData.getTimezone()));
 
-            row[6] = String.valueOf(weatherData.getHourly().getDewPoint2m()[i]);
-            row[7] = String.valueOf(weatherData.getHourly().getApparentTemperature()[i]);
-            row[8] = String.valueOf(weatherData.getHourly().getTemperature80m()[i]);
-            row[9] = String.valueOf(weatherData.getHourly().getTemperature120m()[i]);
+            int recordDaylightCount = 0;
 
-            row[10] = String.valueOf(weatherData.getHourly().getWindSpeed10m()[i]);
-            row[11] = String.valueOf(weatherData.getHourly().getWindSpeed80m()[i]);
-            row[12] = String.valueOf(weatherData.getHourly().getWindDirection10m()[i]);
-            row[13] = String.valueOf(weatherData.getHourly().getWindDirection80m()[i]);
+            for (int j = 0; j < fullDayInHours; j++) {//вычисляем общее значение за день
+                int recordNum = dayNum * fullDayInHours + j;
+                fillNumberArray(0, recordNum);
 
-            row[14] = String.valueOf(weatherData.getHourly().getVisibility()[i]);
-            row[15] = String.valueOf(weatherData.getHourly().getEvapotranspiration()[i]);
-            row[16] = String.valueOf(weatherData.getHourly().getWeatherCode()[i]);
+                if (isDaylightRecord(recordNum, sunrise, sunset)) {//общее значение для светового дня
+                    fillNumberArray(1, recordNum);
+                    recordDaylightCount++;
 
-            row[17] = String.valueOf(weatherData.getHourly().getSoilTemperature0cm()[i]);
-            row[18] = String.valueOf(weatherData.getHourly().getSoilTemperature6cm()[i]);
+                }
+            }
 
-            double precipitation = weatherData.getHourly().getRain()[i] +
-                    weatherData.getHourly().getShowers()[i] +
-                    weatherData.getHourly().getSnowfall()[i];
-            row[19] = String.valueOf(precipitation);
+            for (int colNum = 0; colNum < colCount; colNum++){//преобразовывает в нужные системы счисления и записываает данные
+                final boolean isMiddleValueCol = (colNum >= 12 && colNum < 21) || (colNum < 9);
+                final boolean isGeneralValueCol = (colNum >= 9 && colNum < 12) || (colNum >= 21 && colNum < 24);
+                final boolean isDaylightCol = (colNum >= 12 && colNum < 24);
+                final boolean isDailyCol = colNum >= 35 && colNum < 38;
 
-            addDailyData(weatherData, row, dateTime.toLocalDate().toString());
+                Conversion convert = ConversionFactory.getConversion(columns[colNum].transformation());
+                if (convert == null)
+                    throw new IOException("Error: Conversion could not be found: " +
+                            columns[colNum].transformation());
 
-            csvData.add(row);
+                String convertedValue = "";
+                if (isMiddleValueCol && !isDaylightCol){//преобразовали среднее значение за 24 часа
+                    convertedValue = convert.makeTransformation(
+                            divInNumberArray(values[colNum], fullDayInHours));
+                }
+
+                if (isMiddleValueCol && isDaylightCol){//преобразовали среднее значение за световое время(daylight)
+                    convertedValue = convert.makeTransformation(
+                            divInNumberArray(values[colNum], recordDaylightCount));
+                }
+
+                if (isGeneralValueCol)//преобразовали общее значение
+                    convertedValue = convert.makeTransformation(values[colNum]);
+
+                if (isDailyCol)
+                    convertedValue = convert.makeTransformation(
+                            columns[colNum].valueExtractor().apply(weatherData)[dayNum]);
+
+
+                for (int recordNum = 0; recordNum < fullDayInHours; recordNum++){//вписали в каждую ячейку преобразованное значение
+                    int curRecordNum = recordNum + dayNum * fullDayInHours;
+                    if (!isMiddleValueCol && !isGeneralValueCol && !isDailyCol) {
+                        convertedValue = convert.makeTransformation(
+                                columns[colNum].valueExtractor().apply(weatherData)[curRecordNum]);
+
+                    }
+                    if (isDaylightCol && !(isDaylightRecord(curRecordNum, sunrise, sunset)))//время до заката или после рассвета
+                        csvData[curRecordNum + 1][colNum] = "";
+                    else
+                        csvData[curRecordNum + 1][colNum] = convertedValue;
+                }
+
+            }
         }
 
         return csvData;
     }
 
-    private static void addDailyData(WeatherData weatherData, String[] row, String date) {
-
-        for (int i = 0; i < weatherData.getDaily().getTime().length; i++) {
-            LocalDateTime dailyDate = LocalDateTime.ofInstant(
-                    Instant.ofEpochSecond(weatherData.getDaily().getTime()[i]),
-                    ZoneId.of(weatherData.getTimezone()));
-
-            if (dailyDate.toLocalDate().toString().equals(date)) {
-
-                LocalDateTime sunrise = LocalDateTime.ofInstant(
-                        Instant.ofEpochSecond(weatherData.getDaily().getSunrise()[i]),
-                        ZoneId.of(weatherData.getTimezone()));
-                LocalDateTime sunset = LocalDateTime.ofInstant(
-                        Instant.ofEpochSecond(weatherData.getDaily().getSunset()[i]),
-                        ZoneId.of(weatherData.getTimezone()));
-
-                row[20] = sunrise.format(DateTimeFormatter.ofPattern("HH:mm"));
-                row[21] = sunset.format(DateTimeFormatter.ofPattern("HH:mm"));
-
-                double daylightHours = weatherData.getDaily().getDaylightDuration()[i] / 3600.0;
-                row[22] = String.format(Locale.US, "%.2f", daylightHours);//without Locale.US we get "16,20" ,but we want "16.20"!
-                break;
-            }
+    private void fillNumberArray(int partNum, int recordNum){
+        int funcCount = 12;
+        for (int i = 0; i < funcCount; i++) {
+            addToNumberArray(values, i + partNum * funcCount,
+                    columns[i + partNum * funcCount].valueExtractor().apply(weatherData)[recordNum]);
         }
     }
+
+    boolean isDaylightRecord(int recordNum, LocalDateTime sunrise,  LocalDateTime sunset){
+        LocalDateTime time = LocalDateTime.ofInstant(Instant.ofEpochSecond(
+                        weatherData.getHourly().getTime()[recordNum]),
+                        ZoneId.of(weatherData.getTimezone()));
+
+        return time.isBefore(sunset) && time.isAfter(sunrise);
+    }
+
+
 }
